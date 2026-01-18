@@ -1,0 +1,27 @@
+{
+  "name": "claudekeeper",
+  "version": "0.1.0",
+  "description": "Session coordinator for Claude Code - manages multiple async sessions with attention routing",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "claudekeeper": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
