@@ -3,9 +3,7 @@
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
-import { StateManager } from './state.js'
-import { AttentionManager } from './attention.js'
-import { SessionManager } from './sessions.js'
+import { loadConfig } from './state.js'
 import { Server } from './server.js'
 
 const PID_FILE = join(homedir(), '.claudekeeper', 'claudekeeper.pid')
@@ -16,17 +14,15 @@ claudekeeper - Session coordinator for Claude Code
 
 Usage:
   claudekeeper [options]
-  claudekeeper start [--daemon]
   claudekeeper stop
+  claudekeeper status
 
 Options:
-  --port <port>    Port to listen on (default: 3100)
-  --daemon         Run in background mode
+  --daemon    Run in background mode
 
 Commands:
-  start            Start the server
-  stop             Stop a running daemon
-  status           Show server status
+  stop        Stop a running daemon
+  status      Show server status
 `)
 }
 
@@ -89,16 +85,18 @@ function showStatus(): void {
   }
 }
 
-function startServer(port: number, daemon: boolean): void {
+function startServer(daemon: boolean): void {
   const existingPid = readPid()
   if (existingPid && isProcessRunning(existingPid)) {
     console.error(`Server already running (PID ${existingPid})`)
     process.exit(1)
   }
 
+  const config = loadConfig()
+
   if (daemon) {
     const { spawn } = require('child_process')
-    const child = spawn(process.argv[0], [process.argv[1], '--port', String(port)], {
+    const child = spawn(process.argv[0], [process.argv[1]], {
       detached: true,
       stdio: 'ignore'
     })
@@ -107,15 +105,7 @@ function startServer(port: number, daemon: boolean): void {
     return
   }
 
-  const stateManager = new StateManager()
-  const attentionManager = new AttentionManager(stateManager)
-
-  let server: Server
-
-  const broadcast = (event: unknown) => server.broadcast(event)
-  const sessionManager = new SessionManager(stateManager, attentionManager, broadcast)
-
-  server = new Server(stateManager, sessionManager, attentionManager)
+  const server = new Server(config)
 
   writePid()
 
@@ -133,7 +123,7 @@ function startServer(port: number, daemon: boolean): void {
     process.exit(0)
   })
 
-  server.start(port)
+  server.start()
 }
 
 function main(): void {
@@ -156,21 +146,8 @@ function main(): void {
     return
   }
 
-  let port = 3100
-  let daemon = false
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--port' && args[i + 1]) {
-      port = parseInt(args[i + 1], 10)
-      i++
-    } else if (args[i] === '--daemon') {
-      daemon = true
-    } else if (args[i] === 'start') {
-      // explicit start command, continue
-    }
-  }
-
-  startServer(port, daemon)
+  const daemon = args.includes('--daemon')
+  startServer(daemon)
 }
 
 main()

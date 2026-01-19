@@ -1,85 +1,62 @@
-export interface SessionConfig {
-  model?: string
-  allowedTools?: string[]
-  permissionMode?: string
+// Claude session from ~/.claude/projects/{workdir}/sessions-index.json
+export interface ClaudeSession {
+  id: string                    // UUID from filename
+  workdir: string               // Project path (e.g. /home/jai/Desktop/myproject)
+  firstPrompt: string
+  messageCount: number
+  created: string               // ISO timestamp
+  modified: string              // ISO timestamp
+  gitBranch?: string
 }
 
-export interface SessionProcess {
-  state: 'agent_turn' | 'awaiting_feedback' | 'awaiting_input'
-  pid?: number
-}
-
-export interface Session {
-  id: string
-  workdir: string
-  name?: string
-  createdAt: string
-  lastActivity: string
-  process: SessionProcess | null
-  config: SessionConfig
-}
-
-export interface AttentionRequest {
-  id: string
-  sessionId: string
-  source: string
-  type: 'permission' | 'question' | 'completion' | 'error'
-  summary: string
-  payload: unknown
-  createdAt: string
-  resolvedAt?: string
-  resolution?: unknown
-}
-
-export interface CoordinatorConfig {
-  port: number
-  token: string
-  autoImport: boolean
-  webhooks: string[]
-}
-
-export interface CoordinatorState {
-  sessions: Record<string, Session>
-  attention: AttentionRequest[]
-  config: CoordinatorConfig
-}
-
-export type WSEventType =
-  | 'session:created'
-  | 'session:updated'
-  | 'session:ended'
-  | 'session:message'
-  | 'attention:requested'
-  | 'attention:resolved'
-
-export interface WSEvent {
-  type: WSEventType
-  [key: string]: unknown
-}
-
-export interface CreateSessionRequest {
-  workdir: string
-  prompt?: string
-  name?: string
-  config?: SessionConfig
-}
-
-export interface SendMessageRequest {
-  message: string | ContentBlock[]
-}
-
-export interface ResolveAttentionRequest {
-  behavior: 'allow' | 'deny'
-  updatedInput?: unknown
-  message?: string
+// Message extracted from JSONL files
+export interface Message {
+  id: string                    // UUID from JSONL
+  role: 'user' | 'assistant'
+  content: string | ContentBlock[]
+  timestamp: string
 }
 
 export interface ContentBlock {
-  type: 'text' | 'image'
+  type: string
   text?: string
-  source?: {
-    type: 'base64'
-    media_type: string
-    data: string
-  }
+  name?: string
+  input?: unknown
 }
+
+// Attention request (permission prompts from SDK)
+export interface Attention {
+  id: string
+  sessionId: string
+  type: 'permission' | 'error' | 'completion'
+  toolName?: string
+  toolInput?: unknown
+  toolUseId?: string
+  message?: string
+  timestamp: string
+}
+
+export interface AttentionResolution {
+  behavior: 'allow' | 'deny' | 'allowAlways' | string
+  message?: string
+}
+
+// Active SDK query state
+export interface ActiveQuery {
+  sessionId: string
+  abortController: AbortController
+}
+
+// Config stored in ~/.claudekeeper/config.json
+export interface Config {
+  port: number
+  token: string
+}
+
+// WebSocket event types
+export type WSEvent =
+  | { type: 'session:message'; sessionId: string; message: unknown }
+  | { type: 'session:started'; sessionId: string }
+  | { type: 'session:ended'; sessionId: string; reason: string }
+  | { type: 'attention:requested'; attention: Attention }
+  | { type: 'attention:resolved'; attentionId: string }

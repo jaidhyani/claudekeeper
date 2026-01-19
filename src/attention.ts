@@ -1,105 +1,105 @@
 import { randomBytes } from 'crypto'
-import type { AttentionRequest } from './types.js'
-import type { StateManager } from './state.js'
+import type { Attention, AttentionResolution } from './types.js'
 
-export function createAttentionId(): string {
+function createId(): string {
   return 'attn_' + randomBytes(8).toString('hex')
 }
 
 export function createPermissionAttention(
   sessionId: string,
   toolName: string,
-  input: unknown
-): AttentionRequest {
+  input: unknown,
+  toolUseId: string
+): Attention {
   return {
-    id: createAttentionId(),
+    id: createId(),
     sessionId,
-    source: `session:${sessionId}`,
     type: 'permission',
-    summary: `Permission requested for ${toolName}`,
-    payload: { toolName, input },
-    createdAt: new Date().toISOString()
+    toolName,
+    toolInput: input,
+    toolUseId,
+    timestamp: new Date().toISOString()
   }
 }
 
-export function createQuestionAttention(
-  sessionId: string,
-  question: string,
-  options?: string[]
-): AttentionRequest {
+export function createErrorAttention(sessionId: string, message: string): Attention {
   return {
-    id: createAttentionId(),
+    id: createId(),
     sessionId,
-    source: `session:${sessionId}`,
-    type: 'question',
-    summary: question,
-    payload: { question, options },
-    createdAt: new Date().toISOString()
-  }
-}
-
-export function createCompletionAttention(
-  sessionId: string,
-  summary: string
-): AttentionRequest {
-  return {
-    id: createAttentionId(),
-    sessionId,
-    source: `session:${sessionId}`,
-    type: 'completion',
-    summary,
-    payload: { summary },
-    createdAt: new Date().toISOString()
-  }
-}
-
-export function createErrorAttention(
-  sessionId: string,
-  error: string
-): AttentionRequest {
-  return {
-    id: createAttentionId(),
-    sessionId,
-    source: `session:${sessionId}`,
     type: 'error',
-    summary: `Error: ${error}`,
-    payload: { error },
-    createdAt: new Date().toISOString()
+    message,
+    timestamp: new Date().toISOString()
+  }
+}
+
+export function createCompletionAttention(sessionId: string, message: string): Attention {
+  return {
+    id: createId(),
+    sessionId,
+    type: 'completion',
+    message,
+    timestamp: new Date().toISOString()
   }
 }
 
 export class AttentionManager {
-  private pendingResolvers = new Map<string, (resolution: unknown) => void>()
+  private pending = new Map<string, Attention>()
+  private resolvers = new Map<string, (resolution: unknown) => void>()
 
-  constructor(private stateManager: StateManager) {}
-
-  getPending(): AttentionRequest[] {
-    return this.stateManager.getAttention()
+  getPending(): Attention[] {
+    return Array.from(this.pending.values())
   }
 
-  getById(id: string): AttentionRequest | undefined {
-    return this.stateManager.getAttentionById(id)
+  getById(id: string): Attention | undefined {
+    return this.pending.get(id)
   }
 
-  add(attention: AttentionRequest): void {
-    this.stateManager.addAttention(attention)
+  add(attention: Attention): void {
+    this.pending.set(attention.id, attention)
   }
 
   waitForResolution(attentionId: string): Promise<unknown> {
     return new Promise(resolve => {
-      this.pendingResolvers.set(attentionId, resolve)
+      this.resolvers.set(attentionId, resolve)
     })
   }
 
-  resolve(id: string, resolution: unknown): boolean {
-    const resolved = this.stateManager.resolveAttention(id, resolution)
-    if (resolved) {
-      const resolver = this.pendingResolvers.get(id)
-      if (resolver) {
-        resolver(resolution)
-        this.pendingResolvers.delete(id)
+  resolve(id: string, resolution: AttentionResolution): boolean {
+    const attention = this.pending.get(id)
+    if (!attention) return false
+
+    const resolver = this.resolvers.get(id)
+    if (resolver) {
+      // Build SDK-compatible result
+      const result: Record<string, unknown> = { behavior: resolution.behavior }
+
+      if (attention.toolUseId) {
+        result.toolUseID = attention.toolUseId
+      }
+
+      // SDK expects updatedInput for allow behavior
+      if (resolution.behavior === 'allow' && attention.toolInput !== undefined) {
+        result.updatedInput = attention.toolInput
+      }
+
+      if (resolution.behavior === 'deny') {
+        result.message = resolution.message || 'Denied by user'
+      }
+
+      resolver(result)
+      this.resolvers.delete(id)
+    }
+
+    this.pending.delete(id)
+    return true
+  }
+
+  clearForSession(sessionId: string): void {
+    for (const [id, attention] of this.pending) {
+      if (attention.sessionId === sessionId) {
+        this.pending.delete(id)
+        this.resolvers.delete(id)
       }
     }
-    return resolved
   }
 }
