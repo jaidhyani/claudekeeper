@@ -1,4 +1,4 @@
-// Claude session from ~/.claude/projects/{workdir}/sessions-index.json
+// Claude session parsed from ~/.claude/projects/<workdir-path>/<session-id>.jsonl files
 export interface ClaudeSession {
   id: string                    // UUID from filename
   workdir: string               // Project path (e.g. /home/jai/Desktop/myproject)

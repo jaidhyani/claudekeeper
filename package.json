@@ -1,6 +1,6 @@
 {
   "name": "claudekeeper",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Session coordinator for Claude Code - manages multiple async sessions with attention routing",
   "type": "module",
   "main": "dist/index.js",
