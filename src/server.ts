@@ -15,6 +15,14 @@ type RouteHandler = (
   body: unknown
 ) => Promise<void>
 
+// Pending sessions that were created without a prompt
+// They get converted to real sessions when the first message is sent
+interface PendingSession {
+  workdir: string
+  name?: string
+  config?: SessionMeta['config']
+}
+
 export class Server {
   private httpServer: ReturnType<typeof createServer>
   private wss: WebSocketServer
@@ -22,6 +30,7 @@ export class Server {
   private routes: Map<string, Map<string, RouteHandler>> = new Map()
   private attentionManager: AttentionManager
   private queryManager: QueryManager
+  private pendingSessions = new Map<string, PendingSession>()
 
   constructor(private config: Config) {
     this.attentionManager = new AttentionManager((e) => this.broadcast(e))
@@ -126,15 +135,26 @@ export class Server {
 
     // Send message to session (start/continue query)
     this.route('POST', '/sessions/:id/send', async (_req, res, params, body) => {
-      const session = getSessionById(params.id)
-      if (!session) {
-        this.notFound(res, 'Session not found')
-        return
-      }
-
       const { message } = body as { message?: string }
       if (!message) {
         this.badRequest(res, 'message is required')
+        return
+      }
+
+      // Check if this is a pending session (created without prompt)
+      const pending = this.pendingSessions.get(params.id)
+      if (pending) {
+        // Create the real session with this message as the first prompt
+        this.pendingSessions.delete(params.id)
+        this.queryManager.runQuery(params.id, message, pending.workdir, undefined, pending.config?.permissionMode)
+        this.json(res, { sent: true, newSession: true })
+        return
+      }
+
+      // Otherwise, continue existing session
+      const session = getSessionById(params.id)
+      if (!session) {
+        this.notFound(res, 'Session not found')
         return
       }
 
@@ -162,8 +182,11 @@ export class Server {
       const tempId = `pending_${Date.now()}`
 
       if (prompt) {
-        // Run query with prompt
+        // Run query with prompt immediately
         this.queryManager.runQuery(tempId, prompt, workdir, undefined, config?.permissionMode)
+      } else {
+        // Store as pending - will be created when first message is sent
+        this.pendingSessions.set(tempId, { workdir, name, config })
       }
 
       this.json(res, { tempId, name, config }, 201)

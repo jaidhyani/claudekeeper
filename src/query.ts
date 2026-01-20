@@ -55,6 +55,8 @@ export class QueryManager {
     resumeSessionId?: string,
     permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions'
   ): Promise<void> {
+    console.log(`[QueryManager] Starting query: sessionId=${sessionId}, workdir=${workdir}, resumeSessionId=${resumeSessionId}, permissionMode=${permissionMode}`)
+    console.log(`[QueryManager] Prompt: ${prompt.slice(0, 100)}...`)
     const abortController = new AbortController()
     this.activeQueries.set(sessionId, { sessionId, abortController })
 
@@ -107,6 +109,7 @@ export class QueryManager {
 
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
+      console.error(`[QueryManager] Error in query: ${errorMsg}`)
 
       if (errorMsg.includes('abort')) {
         this.broadcast({ type: 'session:ended', sessionId, reason: 'interrupted' })
