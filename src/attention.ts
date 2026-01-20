@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto'
-import type { Attention, AttentionResolution } from './types.js'
+import { appendInteraction } from './session-meta.js'
+import type { Attention, AttentionResolution, ResolvedInteraction } from './types.js'
 
 function createId(): string {
   return 'attn_' + randomBytes(8).toString('hex')
@@ -45,6 +46,11 @@ export function createCompletionAttention(sessionId: string, message: string): A
 export class AttentionManager {
   private pending = new Map<string, Attention>()
   private resolvers = new Map<string, (resolution: unknown) => void>()
+  private broadcast?: (event: unknown) => void
+
+  constructor(broadcast?: (event: unknown) => void) {
+    this.broadcast = broadcast
+  }
 
   getPending(): Attention[] {
     return Array.from(this.pending.values())
@@ -67,6 +73,23 @@ export class AttentionManager {
   resolve(id: string, resolution: AttentionResolution): boolean {
     const attention = this.pending.get(id)
     if (!attention) return false
+
+    // Log the resolved interaction
+    const interaction: ResolvedInteraction = {
+      id,
+      type: attention.type,
+      toolName: attention.toolName,
+      toolInput: attention.toolInput,
+      resolution: resolution.behavior,
+      message: resolution.message,
+      resolvedAt: new Date().toISOString()
+    }
+    appendInteraction(attention.sessionId, interaction)
+
+    // Broadcast interaction resolved event
+    if (this.broadcast) {
+      this.broadcast({ type: 'interaction:resolved', sessionId: attention.sessionId, interaction })
+    }
 
     const resolver = this.resolvers.get(id)
     if (resolver) {
