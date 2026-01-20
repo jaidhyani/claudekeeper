@@ -1,10 +1,12 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { URL } from 'url'
-import type { Config, AttentionResolution } from './types.js'
+import type { Config, AttentionResolution, SessionMeta, ClaudeSessionWithMeta } from './types.js'
 import { AttentionManager } from './attention.js'
 import { QueryManager } from './query.js'
 import { listAllSessions, getSessionById, readSessionMessages, deleteSession } from './claude-sessions.js'
+import { getSessionMeta, updateSessionMeta, getInteractions, deleteSessionMeta, getAllSessionMetas } from './session-meta.js'
+import { browseWorkdir, readWorkdirFile, getWorkdirConfig } from './workdir-browser.js'
 
 type RouteHandler = (
   req: IncomingMessage,
@@ -46,13 +48,24 @@ export class Server {
       this.json(res, { status: 'ok', timestamp: new Date().toISOString() })
     })
 
-    // List all sessions from ~/.claude
+    // List all sessions from ~/.claude with metadata
     this.route('GET', '/sessions', async (_req, res) => {
       const sessions = listAllSessions()
-      this.json(res, sessions)
+      const metas = getAllSessionMetas()
+
+      const sessionsWithMeta = sessions.map(session => {
+        const meta = metas.get(session.id)
+        return {
+          ...session,
+          ...(meta?.name && { name: meta.name }),
+          ...(meta?.config && { config: meta.config })
+        }
+      })
+
+      this.json(res, sessionsWithMeta)
     })
 
-    // Get session with messages
+    // Get session with messages and metadata
     this.route('GET', '/sessions/:id', async (_req, res, params) => {
       const session = getSessionById(params.id)
       if (!session) {
@@ -61,7 +74,18 @@ export class Server {
       }
 
       const messages = readSessionMessages(params.id)
-      this.json(res, { ...session, messages })
+      const meta = getSessionMeta(params.id)
+      const interactions = getInteractions(params.id)
+
+      const response: ClaudeSessionWithMeta = {
+        ...session,
+        messages,
+        ...(meta?.name && { name: meta.name }),
+        ...(meta?.config && { config: meta.config }),
+        interactions
+      }
+
+      this.json(res, response)
     })
 
     // Delete session
@@ -71,7 +95,33 @@ export class Server {
         this.notFound(res, 'Session not found')
         return
       }
+
+      // Also delete Claudekeeper metadata
+      deleteSessionMeta(params.id)
+
       this.json(res, { deleted: true })
+    })
+
+    // Update session metadata (name, config)
+    this.route('PATCH', '/sessions/:id', async (_req, res, params, body) => {
+      const session = getSessionById(params.id)
+      if (!session) {
+        this.notFound(res, 'Session not found')
+        return
+      }
+
+      const { name, config } = body as Partial<SessionMeta>
+      const changes: Partial<SessionMeta> = {}
+
+      if (name !== undefined) changes.name = name
+      if (config !== undefined) changes.config = config
+
+      const updated = updateSessionMeta(params.id, changes)
+
+      // Broadcast update
+      this.broadcast({ type: 'session:updated', sessionId: params.id, changes })
+
+      this.json(res, updated)
     })
 
     // Send message to session (start/continue query)
@@ -94,21 +144,29 @@ export class Server {
       this.json(res, { sent: true })
     })
 
-    // Create new session by sending first message
+    // Create new session (prompt now optional)
     this.route('POST', '/sessions', async (_req, res, _params, body) => {
-      const { workdir, prompt } = body as { workdir?: string; prompt?: string }
-      if (!workdir || !prompt) {
-        this.badRequest(res, 'workdir and prompt are required')
+      const { workdir, prompt, name, config } = body as {
+        workdir?: string
+        prompt?: string
+        name?: string
+        config?: SessionMeta['config']
+      }
+
+      if (!workdir) {
+        this.badRequest(res, 'workdir is required')
         return
       }
 
       // Generate temp ID for tracking until SDK returns real session ID
       const tempId = `pending_${Date.now()}`
 
-      // Run query (async, don't await)
-      this.queryManager.runQuery(tempId, prompt, workdir)
+      if (prompt) {
+        // Run query with prompt
+        this.queryManager.runQuery(tempId, prompt, workdir, undefined, config?.permissionMode)
+      }
 
-      this.json(res, { tempId }, 201)
+      this.json(res, { tempId, name, config }, 201)
     })
 
     // Interrupt active query
@@ -133,6 +191,66 @@ export class Server {
       }
 
       this.json(res, { resolved: true })
+    })
+
+    // Browse workdir directory
+    this.route('GET', '/workdir/browse', async (req, res) => {
+      const url = new URL(req.url ?? '', `http://${req.headers.host}`)
+      const path = url.searchParams.get('path')
+
+      if (!path) {
+        this.badRequest(res, 'path query parameter is required')
+        return
+      }
+
+      const entries = browseWorkdir(path)
+
+      if (entries === null) {
+        this.notFound(res, 'Path not found or not accessible')
+        return
+      }
+
+      this.json(res, { entries })
+    })
+
+    // Read workdir file
+    this.route('GET', '/workdir/file', async (req, res) => {
+      const url = new URL(req.url ?? '', `http://${req.headers.host}`)
+      const path = url.searchParams.get('path')
+
+      if (!path) {
+        this.badRequest(res, 'path query parameter is required')
+        return
+      }
+
+      const file = readWorkdirFile(path)
+
+      if (file === null) {
+        this.notFound(res, 'File not found, not accessible, or too large')
+        return
+      }
+
+      this.json(res, file)
+    })
+
+    // Get merged workdir config
+    this.route('GET', '/workdir/config', async (req, res) => {
+      const url = new URL(req.url ?? '', `http://${req.headers.host}`)
+      const path = url.searchParams.get('path')
+
+      if (!path) {
+        this.badRequest(res, 'path query parameter is required')
+        return
+      }
+
+      const config = getWorkdirConfig(path)
+
+      if (config === null) {
+        this.notFound(res, 'Workdir not found')
+        return
+      }
+
+      this.json(res, { effective: config })
     })
   }
 
@@ -179,7 +297,7 @@ export class Server {
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
 
     if (req.method === 'OPTIONS') {

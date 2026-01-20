@@ -78,6 +78,7 @@ export interface ResolvedInteraction {
 
 // Extended session with metadata merged in
 export interface ClaudeSessionWithMeta extends ClaudeSession {
+  messages?: Message[]
   name?: string
   config?: SessionConfig
   interactions?: ResolvedInteraction[]
