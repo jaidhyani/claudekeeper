@@ -24,7 +24,7 @@ export class Server {
   private queryManager: QueryManager
 
   constructor(private config: Config) {
-    this.attentionManager = new AttentionManager()
+    this.attentionManager = new AttentionManager((e) => this.broadcast(e))
     this.queryManager = new QueryManager(this.attentionManager, (e) => this.broadcast(e))
 
     this.httpServer = createServer((req, res) => this.handleRequest(req, res))

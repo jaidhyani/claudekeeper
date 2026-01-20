@@ -81,7 +81,7 @@ export class QueryManager {
         cwd: workdir,
         pathToClaudeCodeExecutable: claudePath,
         ...(permissionMode && { permissionMode }),
-        ...(permissionMode === 'bypassPermissions' && { dangerouslySkipPermissions: true })
+        ...(permissionMode === 'bypassPermissions' && { allowDangerouslySkipPermissions: true })
       }
 
       // Resume existing Claude session if provided
