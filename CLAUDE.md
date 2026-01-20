@@ -29,8 +29,6 @@ Claudekeeper is a session coordinator service that:
 **Claudekeeper metadata** (session names, configs) is stored separately:
 - Location: `~/.claudekeeper/sessions/<session-id>/meta.json`
 
-**Important:** There may be a `sessions-index.json` file in Claude's project directories - DO NOT rely on it. It's not reliably maintained. Always read session data directly from `.jsonl` files.
-
 ## Data Flow
 
 ### Creating a Session
@@ -60,8 +58,6 @@ When client sends first message via `/sessions/:id/send`, the pending session is
 2. Finding all `.jsonl` files in each directory
 3. Parsing each file to extract: workdir (from `cwd` field), firstPrompt, timestamps, messageCount
 4. Sorting by modified time (most recent first)
-
-This is intentionally slow but reliable - no index to get out of sync.
 
 ## Building & Running
 
