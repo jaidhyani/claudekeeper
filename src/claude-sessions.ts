@@ -1,32 +1,91 @@
-import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs'
+import { readFileSync, existsSync, readdirSync, unlinkSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { ClaudeSession, Message, ContentBlock } from './types.js'
 
 const CLAUDE_DIR = join(homedir(), '.claude', 'projects')
 
-interface SessionIndexEntry {
-  sessionId: string
-  fullPath: string
-  firstPrompt: string
-  messageCount: number
-  created: string
-  modified: string
-  projectPath: string
-  gitBranch?: string
-}
-
-interface SessionsIndex {
-  version: number
-  entries: SessionIndexEntry[]
-}
-
 // Convert workdir path to Claude project directory name (e.g. /home/jai/Desktop -> -home-jai-Desktop)
 function workdirToProjectDir(workdir: string): string {
   return workdir.replace(/\//g, '-')
 }
 
-// List all Claude sessions across all workdirs
+// Parse session metadata from a .jsonl file
+function parseSessionFile(sessionPath: string): ClaudeSession | null {
+  try {
+    const raw = readFileSync(sessionPath, 'utf-8')
+    const lines = raw.trim().split('\n')
+
+    let firstPrompt = ''
+    let created = ''
+    let modified = ''
+    let gitBranch = ''
+    let workdir = ''
+    let messageCount = 0
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line)
+
+        // Get workdir (cwd) from any message entry
+        if (!workdir && entry.cwd) {
+          workdir = entry.cwd
+        }
+
+        // Get metadata from first user message
+        if (entry.type === 'user' && entry.message?.content) {
+          messageCount++
+          if (!firstPrompt) {
+            const content = entry.message.content
+            if (typeof content === 'string') {
+              firstPrompt = content.slice(0, 200)
+            } else if (Array.isArray(content)) {
+              const textBlock = content.find((b: { type: string }) => b.type === 'text')
+              if (textBlock?.text) {
+                firstPrompt = textBlock.text.slice(0, 200)
+              }
+            }
+          }
+          if (!created && entry.timestamp) {
+            created = entry.timestamp
+          }
+          if (!gitBranch && entry.gitBranch) {
+            gitBranch = entry.gitBranch
+          }
+        }
+
+        if (entry.type === 'assistant') {
+          messageCount++
+        }
+
+        // Track latest timestamp
+        if (entry.timestamp) {
+          modified = entry.timestamp
+        }
+      } catch {
+        // Skip malformed lines
+      }
+    }
+
+    if (!firstPrompt || !workdir) return null
+
+    const sessionId = sessionPath.split('/').pop()?.replace('.jsonl', '') || ''
+
+    return {
+      id: sessionId,
+      workdir,
+      firstPrompt,
+      messageCount,
+      created: created || modified,
+      modified,
+      gitBranch
+    }
+  } catch {
+    return null
+  }
+}
+
+// List all Claude sessions across all workdirs (reads directly from .jsonl files)
 export function listAllSessions(): ClaudeSession[] {
   if (!existsSync(CLAUDE_DIR)) return []
 
@@ -34,27 +93,21 @@ export function listAllSessions(): ClaudeSession[] {
 
   for (const projectDirName of readdirSync(CLAUDE_DIR)) {
     const projectDir = join(CLAUDE_DIR, projectDirName)
-    const indexPath = join(projectDir, 'sessions-index.json')
 
-    if (!existsSync(indexPath)) continue
-
+    // Read all .jsonl files in this project directory
+    let files: string[]
     try {
-      const raw = readFileSync(indexPath, 'utf-8')
-      const index = JSON.parse(raw) as SessionsIndex
-
-      for (const entry of index.entries) {
-        sessions.push({
-          id: entry.sessionId,
-          workdir: entry.projectPath,
-          firstPrompt: entry.firstPrompt,
-          messageCount: entry.messageCount,
-          created: entry.created,
-          modified: entry.modified,
-          gitBranch: entry.gitBranch
-        })
-      }
+      files = readdirSync(projectDir).filter(f => f.endsWith('.jsonl'))
     } catch {
-      // Skip corrupted index files
+      continue
+    }
+
+    for (const file of files) {
+      const sessionPath = join(projectDir, file)
+      const session = parseSessionFile(sessionPath)
+      if (session) {
+        sessions.push(session)
+      }
     }
   }
 
@@ -67,28 +120,28 @@ export function listAllSessions(): ClaudeSession[] {
 export function listSessionsForWorkdir(workdir: string): ClaudeSession[] {
   const projectDirName = workdirToProjectDir(workdir)
   const projectDir = join(CLAUDE_DIR, projectDirName)
-  const indexPath = join(projectDir, 'sessions-index.json')
 
-  if (!existsSync(indexPath)) return []
+  if (!existsSync(projectDir)) return []
+
+  const sessions: ClaudeSession[] = []
 
   try {
-    const raw = readFileSync(indexPath, 'utf-8')
-    const index = JSON.parse(raw) as SessionsIndex
+    const files = readdirSync(projectDir).filter(f => f.endsWith('.jsonl'))
 
-    return index.entries.map(entry => ({
-      id: entry.sessionId,
-      workdir: entry.projectPath,
-      firstPrompt: entry.firstPrompt,
-      messageCount: entry.messageCount,
-      created: entry.created,
-      modified: entry.modified,
-      gitBranch: entry.gitBranch
-    })).sort((a, b) =>
-      new Date(b.modified).getTime() - new Date(a.modified).getTime()
-    )
+    for (const file of files) {
+      const sessionPath = join(projectDir, file)
+      const session = parseSessionFile(sessionPath)
+      if (session) {
+        sessions.push(session)
+      }
+    }
   } catch {
     return []
   }
+
+  return sessions.sort((a, b) =>
+    new Date(b.modified).getTime() - new Date(a.modified).getTime()
+  )
 }
 
 // Get session metadata by ID
@@ -182,7 +235,7 @@ function extractContent(content: unknown): string | ContentBlock[] {
   return ''
 }
 
-// Delete a session (JSONL file and index entry)
+// Delete a session (JSONL file)
 export function deleteSession(sessionId: string): boolean {
   const session = getSessionById(sessionId)
   if (!session) return false
@@ -190,24 +243,12 @@ export function deleteSession(sessionId: string): boolean {
   const projectDirName = workdirToProjectDir(session.workdir)
   const projectDir = join(CLAUDE_DIR, projectDirName)
   const sessionPath = join(projectDir, `${sessionId}.jsonl`)
-  const indexPath = join(projectDir, 'sessions-index.json')
 
   // Delete the JSONL file
   if (existsSync(sessionPath)) {
     unlinkSync(sessionPath)
+    return true
   }
 
-  // Update the index to remove this session
-  if (existsSync(indexPath)) {
-    try {
-      const raw = readFileSync(indexPath, 'utf-8')
-      const index = JSON.parse(raw) as SessionsIndex
-      index.entries = index.entries.filter(e => e.sessionId !== sessionId)
-      writeFileSync(indexPath, JSON.stringify(index, null, 2))
-    } catch {
-      // Index update failed, but file was deleted
-    }
-  }
-
-  return true
+  return false
 }
