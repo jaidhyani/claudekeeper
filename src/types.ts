@@ -53,10 +53,42 @@ export interface Config {
   token: string
 }
 
+// Session metadata stored in ~/.claudekeeper/sessions/{id}/meta.json
+export interface SessionMeta {
+  name?: string
+  config?: SessionConfig
+}
+
+export interface SessionConfig {
+  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions'
+  allowedTools?: string[]
+  disallowedTools?: string[]
+}
+
+// Resolved interaction stored in ~/.claudekeeper/sessions/{id}/interactions.jsonl
+export interface ResolvedInteraction {
+  id: string
+  type: 'permission' | 'error' | 'completion'
+  toolName?: string
+  toolInput?: unknown
+  resolution: string
+  message?: string
+  resolvedAt: string
+}
+
+// Extended session with metadata merged in
+export interface ClaudeSessionWithMeta extends ClaudeSession {
+  name?: string
+  config?: SessionConfig
+  interactions?: ResolvedInteraction[]
+}
+
 // WebSocket event types
 export type WSEvent =
   | { type: 'session:message'; sessionId: string; message: unknown }
   | { type: 'session:started'; sessionId: string }
   | { type: 'session:ended'; sessionId: string; reason: string }
+  | { type: 'session:updated'; sessionId: string; changes: Partial<SessionMeta> }
   | { type: 'attention:requested'; attention: Attention }
   | { type: 'attention:resolved'; attentionId: string }
+  | { type: 'interaction:resolved'; sessionId: string; interaction: ResolvedInteraction }
