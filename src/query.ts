@@ -52,7 +52,8 @@ export class QueryManager {
     sessionId: string,
     prompt: string,
     workdir: string,
-    resumeSessionId?: string
+    resumeSessionId?: string,
+    permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions'
   ): Promise<void> {
     const abortController = new AbortController()
     this.activeQueries.set(sessionId, { sessionId, abortController })
@@ -78,7 +79,9 @@ export class QueryManager {
         canUseTool,
         includePartialMessages: true,
         cwd: workdir,
-        pathToClaudeCodeExecutable: claudePath
+        pathToClaudeCodeExecutable: claudePath,
+        ...(permissionMode && { permissionMode }),
+        ...(permissionMode === 'bypassPermissions' && { dangerouslySkipPermissions: true })
       }
 
       // Resume existing Claude session if provided
