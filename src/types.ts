@@ -86,8 +86,8 @@ export interface ClaudeSessionWithMeta extends ClaudeSession {
 
 // WebSocket event types
 export type WSEvent =
+  | { type: 'session:created'; session: ClaudeSession; tempId: string }
   | { type: 'session:message'; sessionId: string; message: unknown }
-  | { type: 'session:started'; sessionId: string }
   | { type: 'session:ended'; sessionId: string; reason: string }
   | { type: 'session:updated'; sessionId: string; changes: Partial<SessionMeta> }
   | { type: 'attention:requested'; attention: Attention }

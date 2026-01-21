@@ -3,8 +3,9 @@ import { existsSync } from 'fs'
 import { execSync } from 'child_process'
 import { homedir } from 'os'
 import { join } from 'path'
-import type { ActiveQuery } from './types.js'
+import type { ActiveQuery, ClaudeSession } from './types.js'
 import { AttentionManager, createPermissionAttention, createErrorAttention, createCompletionAttention } from './attention.js'
+import { getSessionById } from './claude-sessions.js'
 
 function findClaudeExecutable(): string {
   if (process.env.CLAUDE_CODE_PATH && existsSync(process.env.CLAUDE_CODE_PATH)) {
@@ -49,22 +50,29 @@ export class QueryManager {
   }
 
   async runQuery(
-    sessionId: string,
+    tempId: string,
     prompt: string,
     workdir: string,
     resumeSessionId?: string,
     permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions'
   ): Promise<void> {
-    console.log(`[QueryManager] Starting query: sessionId=${sessionId}, workdir=${workdir}, resumeSessionId=${resumeSessionId}, permissionMode=${permissionMode}`)
+    console.log(`[QueryManager] Starting query: tempId=${tempId}, workdir=${workdir}, resumeSessionId=${resumeSessionId}, permissionMode=${permissionMode}`)
     console.log(`[QueryManager] Prompt: ${prompt.slice(0, 100)}...`)
     const abortController = new AbortController()
-    this.activeQueries.set(sessionId, { sessionId, abortController })
+
+    // Track by tempId initially, will update to realSessionId when SDK returns it
+    this.activeQueries.set(tempId, { sessionId: tempId, abortController })
+
+    // Will be set when SDK returns the real session ID
+    let realSessionId: string | null = null
 
     const canUseTool = async (
       toolName: string,
       input: unknown,
       options: { toolUseID: string }
     ) => {
+      // Use real session ID if available, otherwise tempId
+      const sessionId = realSessionId ?? tempId
       const attention = createPermissionAttention(sessionId, toolName, input, options.toolUseID)
       this.attentionManager.add(attention)
       this.broadcast({ type: 'attention:requested', attention })
@@ -94,15 +102,51 @@ export class QueryManager {
       const response = query({ prompt, options })
 
       for await (const message of response) {
-        // Capture session ID from first message
         const msg = message as { sessionId?: string }
-        if (msg.sessionId) {
-          this.broadcast({ type: 'session:started', sessionId: msg.sessionId })
+
+        // Capture real session ID from SDK (only on first message that has it)
+        if (msg.sessionId && !realSessionId) {
+          realSessionId = msg.sessionId
+          console.log(`[QueryManager] Got real sessionId=${realSessionId} for tempId=${tempId}`)
+
+          // Update tracking: remove tempId entry, add realSessionId entry
+          this.activeQueries.delete(tempId)
+          this.activeQueries.set(realSessionId, { sessionId: realSessionId, abortController })
+
+          // Fetch full session data and broadcast session:created
+          // Small delay to ensure JSONL file is written
+          setTimeout(() => {
+            const session = getSessionById(realSessionId!)
+            if (session) {
+              this.broadcast({
+                type: 'session:created',
+                session,
+                tempId
+              })
+            } else {
+              // Session file may not exist yet, broadcast minimal info
+              this.broadcast({
+                type: 'session:created',
+                session: {
+                  id: realSessionId!,
+                  workdir,
+                  firstPrompt: prompt.slice(0, 200),
+                  messageCount: 0,
+                  created: new Date().toISOString(),
+                  modified: new Date().toISOString()
+                } as ClaudeSession,
+                tempId
+              })
+            }
+          }, 100)
         }
 
+        // Broadcast message with real session ID if available
+        const sessionId = realSessionId ?? tempId
         this.broadcast({ type: 'session:message', sessionId, message })
       }
 
+      const sessionId = realSessionId ?? tempId
       const completion = createCompletionAttention(sessionId, 'Query completed')
       this.attentionManager.add(completion)
       this.broadcast({ type: 'attention:requested', attention: completion })
@@ -111,6 +155,7 @@ export class QueryManager {
       const errorMsg = err instanceof Error ? err.message : String(err)
       console.error(`[QueryManager] Error in query: ${errorMsg}`)
 
+      const sessionId = realSessionId ?? tempId
       if (errorMsg.includes('abort')) {
         this.broadcast({ type: 'session:ended', sessionId, reason: 'interrupted' })
       } else {
@@ -119,7 +164,11 @@ export class QueryManager {
         this.broadcast({ type: 'attention:requested', attention })
       }
     } finally {
-      this.activeQueries.delete(sessionId)
+      const sessionId = realSessionId ?? tempId
+      this.activeQueries.delete(tempId)
+      if (realSessionId) {
+        this.activeQueries.delete(realSessionId)
+      }
       this.broadcast({ type: 'session:ended', sessionId, reason: 'completed' })
     }
   }
